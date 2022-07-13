@@ -1,0 +1,294 @@
+#coding=utf8
+
+from __future__ import division
+import numpy as np
+from scipy.special import expit
+from matplotlib import pylab as plt
+import math
+
+def binary_cross_entropy(data, reconst):
+    return - np.mean( np.sum( data * np.log(reconst) + (1-data) * np.log(1 - reconst), axis=1) )
+
+def reconstruct_data(data, b, c1, c2, w_vh1, w_h1h2, num_sample=100):
+    m_h1 = expit( np.dot(data, w_vh1) + c1 )
+    for i in range(num_sample):
+        m_h2 = expit( np.dot(m_h1, w_h1h2) + c2 )
+        m_h1 = expit( np.dot(w_h1h2, m_h2.T).T + c1 )
+    return expit( np.dot(w_vh1, m_h1.T).T + b )
+
+def popup(data, c1, w_vh1):
+    return expit( np.dot(data, w_vh1) + c1 )
+
+def rbm_contrastive_divergence(data, b, c, w, num_sample=100):
+    # Mean field
+    m_vis = data
+    m_hid = expit( np.dot(data, w) + c )
+    # Gibbs sample
+    # s_vis = m_vis
+    s_vis = np.random.binomial(1, m_vis)
+    for i in range(num_sample):
+        sm_hid = expit( np.dot(s_vis, w) + c )
+        s_hid = np.random.binomial(1, sm_hid)
+        sm_vis = expit( np.dot(w, s_hid.T).T + b )
+        s_vis = np.random.binomial(1, sm_vis)
+    return np.mean(m_vis - s_vis, axis=0), np.mean(m_hid - s_hid, axis=0), \
+                    (np.dot(m_vis.T, m_hid) - np.dot(s_vis.T, s_hid)) / len(data)
+
+def dbm_contrastive_divergence(data, b, c1, c2, w_vh1, w_h1h2, num_sample=100):
+    # Mean field
+    m_vis = data
+    m_h1 = np.random.uniform(size=(len(data), len(c1)))
+    m_h2 = np.random.uniform(size=(len(data), len(c2)))
+    for i in range(num_sample):
+        m_h1 = expit( np.dot(m_vis, w_vh1) + np.dot(w_h1h2, m_h2.T).T + c1 )
+        m_h2 = expit( np.dot(m_h1, w_h1h2) + c2 )
+    # Gibbs sample
+    s_vis = np.random.binomial(1, m_vis)
+    s_h1 = np.random.binomial(1, 0.5, size=(len(data), len(c1)))
+    s_h2 = np.random.binomial(1, 0.5, size=(len(data), len(c2)))
+    for i in range(num_sample):
+        sm_vis = expit( np.dot(w_vh1, s_h1.T).T + b )
+        s_vis = np.random.binomial(1, sm_vis)
+        sm_h1 = expit( np.dot(s_vis, w_vh1) + np.dot(w_h1h2, s_h2.T).T + c1 )
+        s_h1 = np.random.binomial(1, sm_h1)
+        sm_h2 = expit( np.dot(s_h1, w_h1h2) + c2 )
+        s_h2 = np.random.binomial(1, sm_h2)
+    return np.mean(m_vis - s_vis, axis=0), np.mean(m_h1 - s_h1, axis=0), np.mean(m_h2 - s_h2, axis=0), \
+                ( np.dot(m_vis.T, m_h1) - np.dot(s_vis.T, s_h1) ) / len(data), ( np.dot(m_h1.T, m_h2) - np.dot(s_h1.T, s_h2) ) / len(data)
+
+# Assign structural parameters
+num_visible = 500
+num_hidden1 = 1000
+num_hidden2 = 1000
+
+# Assign learning parameters
+pretrain_epochs = 100
+pretrain_learning_rate = 0.1
+train_epochs = 100
+train_learning_rate = 0.1
+
+# Initialize first module weights
+b = np.zeros((num_visible, ))
+c1 = np.zeros((num_hidden1, ))
+c2 = np.zeros((num_hidden2, ))
+w_vh1 = np.random.normal(scale=0.01, size=(num_visible, num_hidden1))
+w_h1h2 = np.random.normal(scale=0.01, size=(num_hidden1, num_hidden2))
+
+# Initialize second module weights
+bb = np.zeros((num_visible, ))
+cc1 = np.zeros((num_hidden1, ))
+cc2 = np.zeros((num_hidden2, ))
+ww_vh1 = np.random.normal(scale=0.01, size=(num_visible, num_hidden1))
+ww_h1h2 = np.random.normal(scale=0.01, size=(num_hidden1, num_hidden2))
+
+
+# pretrain code module example
+data = np.load("APIcodefeaturedemo_re.npy")[
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]]
+# Pretraining
+for i in range(pretrain_epochs):
+    # Calculate gradient
+    update_b, update_c1, update_w_vh1 = rbm_contrastive_divergence(data, b, c1, w_vh1)
+    # Upate parameters
+    b += pretrain_learning_rate * update_b
+    c1 += pretrain_learning_rate * update_c1
+    w_vh1 += pretrain_learning_rate * update_w_vh1
+
+pseudo_data = popup(data, c1, w_vh1)
+for i in range(pretrain_epochs):
+    # Calculate gradient
+    update_c1, update_c2, update_w_h1h2 = rbm_contrastive_divergence(pseudo_data, c1, c2, w_h1h2)
+    # Upate parameters
+    c1 += pretrain_learning_rate * update_c1
+    c2 += pretrain_learning_rate * update_c2
+    w_h1h2 += pretrain_learning_rate * update_w_h1h2
+
+# Fine tuning
+for i in range(train_epochs):
+    # Calculate gradient
+    update_b, update_c1, update_c2, update_w_vh1, update_w_h1h2 \
+                                    = dbm_contrastive_divergence(data, b, c1, c2, w_vh1, w_h1h2)
+    # Update parameters
+    b += train_learning_rate * update_b
+    c1 += train_learning_rate * update_c1
+    c2 += train_learning_rate * update_c2
+    w_vh1 += train_learning_rate * update_w_vh1
+    w_h1h2 += train_learning_rate * update_w_h1h2
+
+# pretrain text module example
+data2 = np.load("APItextfeaturedemo_re.npy")[
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]]
+
+# Pretraining
+for i in range(pretrain_epochs):
+    # Calculate gradient
+    update_b, update_c1, update_w_vh1 = rbm_contrastive_divergence(data2, bb, cc1, ww_vh1)
+    # Upate parameters
+    bb += pretrain_learning_rate * update_b
+    cc1 += pretrain_learning_rate * update_c1
+    ww_vh1 += pretrain_learning_rate * update_w_vh1
+
+pseudo_data = popup(data2, cc1, ww_vh1)
+for i in range(pretrain_epochs):
+    # Calculate gradient
+    update_c1, update_c2, update_w_h1h2 = rbm_contrastive_divergence(pseudo_data, cc1, cc2, ww_h1h2)
+    # Upate parameters
+    cc1 += pretrain_learning_rate * update_c1
+    cc2 += pretrain_learning_rate * update_c2
+    ww_h1h2 += pretrain_learning_rate * update_w_h1h2
+
+# Fine tuning
+for i in range(train_epochs):
+    # Calculate gradient
+    update_b, update_c1, update_c2, update_w_vh1, update_w_h1h2 \
+                                    = dbm_contrastive_divergence(data2, bb, cc1, cc2, ww_vh1, ww_h1h2)
+    # Update parameters
+    bb += train_learning_rate * update_b
+    cc1 += train_learning_rate * update_c1
+    cc2 += train_learning_rate * update_c2
+    ww_vh1 += train_learning_rate * update_w_vh1
+    ww_h1h2 += train_learning_rate * update_w_h1h2
+
+# bdbm
+def reconstruct_data_mdbm_left(data, data2, b, bb, c1, cc1, c2, cc2, w_vh1, ww_vh1, w_h1h2, ww_h1h2, w_h2h3, ww_h2h3, c3, num_sample=100):
+    m_h1 = expit(np.dot(data, w_vh1) + c1)
+    m_h2 = expit(np.dot(m_h1, w_h1h2) + c2)
+    mm_h1 = expit(np.dot(data2, ww_vh1) + cc1)
+    mm_h2 = expit(np.dot(mm_h1, ww_h1h2) + cc2)
+    for i in range(num_sample):
+        m_h3 = expit(np.dot(m_h2, w_h2h3) + np.dot(mm_h2, ww_h2h3) + c3)
+        m_h2 = expit(np.dot(w_h2h3, m_h3.T).T + c2)
+        m_h1 = expit(np.dot(w_h1h2, m_h2.T).T + c1)
+    return  expit(np.dot(w_vh1, m_h1.T).T + b)
+
+def reconstruct_data_mdbm_right(data, data2, b, bb, c1, cc1, c2, cc2, w_vh1, ww_vh1, w_h1h2, ww_h1h2, w_h2h3, ww_h2h3, c3, num_sample=100):
+    m_h1 = expit(np.dot(data, w_vh1) + c1)
+    m_h2 = expit(np.dot(m_h1, w_h1h2) + c2)
+    mm_h1 = expit(np.dot(data2, ww_vh1) + cc1)
+    mm_h2 = expit(np.dot(mm_h1, ww_h1h2) + cc2)
+    for i in range(num_sample):
+        m_h3 = expit(np.dot(m_h2, w_h2h3) + np.dot(mm_h2, ww_h2h3) + c3)
+        m_h2 = expit(np.dot(ww_h2h3, m_h3.T).T + cc2)
+        m_h1 = expit(np.dot(ww_h1h2, m_h2.T).T + cc1)
+    return expit(np.dot(ww_vh1, m_h1.T).T + bb)
+
+def popup(data, c1, w_vh1):
+    return expit( np.dot(data, w_vh1) + c1 )
+
+def mdmb_constrastive_divergence(data, data2, b, bb, c1, cc1, c2, cc2, w_vh1, ww_vh1, w_h1h2, ww_h1h2, w_h2h3, ww_h2h3, c3, num_sample=100):
+    #Mean field
+    m_vis = data
+    mm_vis = data2
+    m_h1 = np.random.uniform(size=(len(data), len(c1)))
+    mm_h1 = np.random.uniform(size=(len(data2), len(cc1)))
+    m_h2 = np.random.uniform(size=(len(data), len(c2)))
+    mm_h2 = np.random.uniform(size=(len(data2), len(cc2)))
+    m_h3 = np.random.uniform(size=(len(data), len(c3)))
+    for i in range(num_sample):
+        m_h1 = expit(np.dot(m_vis, w_vh1) + np.dot(w_h1h2, m_h2.T).T + c1)
+        m_h2 = expit(np.dot(m_h1, w_h1h2) + np.dot(w_h2h3, m_h3.T).T + c2)
+        mm_h1 = expit(np.dot(mm_vis, ww_vh1) + np.dot(ww_h1h2, mm_h2.T).T + cc1)
+        mm_h2 = expit(np.dot(mm_h1, ww_h1h2) + np.dot(ww_h2h3, m_h3.T).T + cc2)
+        m_h3 = expit(np.dot(m_h2, w_h2h3) + np.dot(mm_h2, ww_h2h3) + c3)
+    # Gibbs sample
+    s_vis = np.random.binomial(1, m_vis)
+    s_h1 = np.random.binomial(1, 0.5, size=(len(data), len(c1)))
+    s_h2 = np.random.binomial(1, 0.5, size=(len(data), len(c2)))
+    ss_vis = np.random.binomial(1, mm_vis)
+    ss_h1 = np.random.binomial(1, 0.5, size=(len(data2), len(cc1)))
+    ss_h2 = np.random.binomial(1, 0.5, size=(len(data2), len(cc2)))
+    s_h3 = np.random.binomial(1, 0.5, size=(len(data), len(c3)))
+    for i in range(num_sample):
+        # left DBM
+        sm_vis = expit(np.dot(w_vh1, s_h1.T).T + b)
+        s_vis = np.random.binomial(1, sm_vis)
+        sm_h1 = expit(np.dot(s_vis, w_vh1) + np.dot(w_h1h2, s_h2.T).T + c1)
+        s_h1 = np.random.binomial(1, sm_h1)
+        sm_h2 = expit(np.dot(s_h1, w_h1h2) + np.dot(w_h2h3, s_h3.T).T + c2)
+        s_h2 = np.random.binomial(1, sm_h2)
+        # right DBM
+        ssm_vis = expit(np.dot(ww_vh1, ss_h1.T).T + bb)
+        ss_vis = np.random.binomial(1, ssm_vis)
+        ssm_h1 = expit(np.dot(ss_vis, w_vh1) + np.dot(ww_h1h2, ss_h2.T).T + cc1)
+        ss_h1 = np.random.binomial(1, ssm_h1)
+        ssm_h2 = expit(np.dot(ss_h1, ww_h1h2) + np.dot(ww_h2h3, s_h3.T).T + cc2)
+        ss_h2 = np.random.binomial(1, ssm_h2)
+        # joint representation
+        sm_h3 = expit(np.dot(s_h2, w_h2h3) + np.dot(ss_h2, ww_h2h3) + c3)
+        s_h3 = np.random.binomial(1, sm_h3)
+    return np.mean(m_vis - s_vis, axis=0), np.mean(mm_vis - ss_vis, axis=0), np.mean(m_h1 - s_h1, axis=0), np.mean(mm_h1 - ss_h1, axis=0), \
+           np.mean(m_h2 - s_h2, axis=0), np.mean(mm_h2 - ss_h2, axis=0), (np.dot(m_vis.T, m_h1) - np.dot(s_vis.T, s_h1)) / len(data), \
+           (np.dot(mm_vis.T, mm_h1) - np.dot(ss_vis.T, ss_h1)) / len(data2), (np.dot(m_h1.T, m_h2) - np.dot(s_h1.T, s_h2)) / len(data), \
+           (np.dot(mm_h1.T, mm_h2) - np.dot(ss_h1.T, ss_h2)) / len(data2), \
+           (np.dot(m_h2.T, m_h3) - np.dot(s_h2.T, s_h3)) / len(data) , (np.dot(mm_h2.T, m_h3) - np.dot(ss_h2.T, s_h3)) / len(data2), \
+           np.mean(m_h3 - s_h3, axis=0)
+
+# train bdbm example
+# Assign structural parameters
+num_visible = 500
+num_hidden1 = 1000
+num_hidden2 = 1000
+num_hidden3 = 1000
+
+# Assign learning parameters
+pretrain_epochs = 100
+pretrain_learning_rate = 0.1
+train_epochs = 100
+train_learning_rate = 0.1
+
+# Initialize joint layer weights
+w_h2h3 = np.random.normal(scale=0.01, size=(num_hidden2, num_hidden3))
+ww_h2h3 = np.random.normal(scale=0.01, size=(num_hidden2, num_hidden3))
+c3 = np.zeros((num_hidden2, ))
+
+
+left_data = np.load("APIcodefeaturedemo_re.npy")[
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]]
+right_data = np.load("APItextfeaturedemo_re.npy")[
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]]
+
+# Pretraining
+h1_data = expit(np.dot(left_data, w_vh1) + c1)
+h2_data = expit(np.dot(h1_data, w_h1h2) + c2)
+hh1_data = expit(np.dot(right_data, ww_vh1) + cc1)
+hh2_data = expit(np.dot(hh1_data, ww_h1h2) + cc2)
+for i in range(pretrain_epochs):
+    # Calculate gradient
+    #left
+    update_c2, update_c3, update_w_h2h3 = rbm_contrastive_divergence(h2_data, c2, c3, w_h2h3)
+    # Upate parameters
+    #left
+    c2 += pretrain_learning_rate * update_c2
+    c3 += pretrain_learning_rate * update_c3
+    w_h2h3 += pretrain_learning_rate * update_w_h2h3
+    # Calculate gradient
+    # right
+    update_cc2, update_c3, update_ww_h2h3 = rbm_contrastive_divergence(hh2_data, cc2, c3, ww_h2h3)
+    # Upate parameters
+    #right
+    cc2 += pretrain_learning_rate * update_cc2
+    c3 += pretrain_learning_rate * update_c3
+    ww_h2h3 += pretrain_learning_rate * update_ww_h2h3
+
+# Fine tuning
+for i in range(train_epochs):
+    # Calculate gradient
+    update_b, update_bb, update_c1, update_cc1, update_c2, update_cc2, update_w_vh1, update_ww_vh1, update_w_h1h2, update_ww_h1h2, update_w_h2h3, update_ww_h2h3, update_c3 \
+                                    = mdmb_constrastive_divergence(left_data, right_data, b, bb, c1, cc1, c2, cc2, w_vh1, ww_vh1, w_h1h2, ww_h1h2, w_h2h3, ww_h2h3, c3)
+    # Update parameters
+    #left
+    b += train_learning_rate * update_b
+    c1 += train_learning_rate * update_c1
+    c2 += train_learning_rate * update_c2
+    w_vh1 += train_learning_rate * update_w_vh1
+    w_h1h2 += train_learning_rate * update_w_h1h2
+    w_h2h3 += train_learning_rate * update_w_h2h3
+    #right
+    bb += train_learning_rate * update_bb
+    cc1 += train_learning_rate * update_cc1
+    cc2 += train_learning_rate * update_cc2
+    ww_vh1 += train_learning_rate * update_ww_vh1
+    ww_h1h2 += train_learning_rate * update_ww_h1h2
+    ww_h2h3 += train_learning_rate * update_ww_h2h3
+    #joint
+    c3 += train_learning_rate * update_c3
